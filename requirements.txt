@@ -5,3 +5,4 @@ python-mnist
 pytest
 tqdm
 tensornetwork
+scikit-image

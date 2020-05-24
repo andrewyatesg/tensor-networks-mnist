@@ -3,7 +3,7 @@
 A short demonstration of Google's TensorNetwork library (https://arxiv.org/pdf/1905.01330) for the classification of MNIST.
 The goal is to employ a few different architectures for this:
 
-1. Matrix product states (https://arxiv.org/pdf/1906.06329).
+1. Matrix product states (http://papers.nips.cc/paper/6211-supervised-learning-with-tensor-networks and https://arxiv.org/pdf/1906.06329).
 2. Tree tensor networks (https://arxiv.org/abs/1901.02217 and https://arxiv.org/abs/1801.00315).
 3. Implementing architectures (1) and (2) in a quantum circuit (https://arxiv.org/pdf/1803.11537).
 
