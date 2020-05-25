@@ -66,6 +66,38 @@ def load_MNIST_dataset():
     return dataset
 
 
+def create_mps_state(length, input_dim, bond_dim, output_dim, output_idx, min=-100, max=100):
+    """
+    Creates a MPS as a list of tensornetwork Node objects.
+
+    For convenience, each node in the network will have shape (left, right, input, output)
+    If a node doesn't have a left or right left (i.e. the endpoint nodes) then these
+    dimensions will be set to zero
+    :param length: number of nodes
+    :param input_dim: input dimension of each node (usually 2)
+    :param bond_dim: bond dimension of MPS, for now each will be the same
+    :param output_dim: output dimension of a single node in the MPS (usually 10)
+    :param output_idx: index of the node to place the output leg
+    :param max: maximum value that node components can be randomly initialized to
+    :param min: minimum value that node components can be randomly initialized to
+    :return: list of tensornetwork nodes in the proper format of [1]
+    """
+    # Initialize the MPS with no left leg
+    mps_lst = [tn.Node(np.random.uniform(min, max, (0, bond_dim, input_dim, 0)))]
+    # Add each non-endpoint node to the MPS
+    for i in range(length - 2):
+        mps_lst.append(tn.Node(np.random.uniform(min, max, (bond_dim, bond_dim, input_dim, 0))))
+    # Finally add the right-most node
+    mps_lst.append(tn.Node(np.random.uniform(min, max, (bond_dim, 0, input_dim, 0))))
+    # Replace the node at {output_idx} with a node that has an output leg
+    if output_idx == length - 1:
+        mps_lst[output_idx] = tn.Node(np.random.uniform(min, max, (bond_dim, 0, input_dim, output_dim)))
+    elif output_idx == 0:
+        mps_lst[output_idx] = tn.Node(np.random.uniform(min, max, (0, bond_dim, input_dim, output_dim)))
+    else:
+        mps_lst[output_idx] = tn.Node(np.random.uniform(min, max, (bond_dim, bond_dim, input_dim, output_dim)))
+
+
 def project_input(feature_tensor: tensornetwork.Node, mps_lst, j):
     # Replicate the tensor representing the features of the image
     mps_lst = tn.replicate_nodes(mps_lst)
