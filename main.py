@@ -1,6 +1,8 @@
 """
 [1] Stoudenmire, Schwab. Supervised Learning with Tensor Networks. http://papers.nips.cc/paper/6211-supervised-learning-with-tensor-networks.
 """
+import math
+
 import numpy as np
 import tensornetwork as tn
 import os
@@ -96,6 +98,51 @@ def create_mps_state(length, input_dim, bond_dim, output_dim, output_idx, min=-1
         mps_lst[output_idx] = tn.Node(np.random.uniform(min, max, (0, bond_dim, input_dim, output_dim)))
     else:
         mps_lst[output_idx] = tn.Node(np.random.uniform(min, max, (bond_dim, bond_dim, input_dim, output_dim)))
+    return mps_lst
+
+
+def form_bond_tensor(mps, output_idx):
+    """
+    Forms the bond tensor and partitions the MPS around the bond tensor, returning
+    the bond tensor and both partitions.
+    :param mps: the list of nodes corresponding to the MPS
+    :param output_idx: the index of the node with the output leg
+    :return: triple (bond, left, right) where {bond} is the bond tensor, {left} ({right})
+    is the partition to the left (right) of the bond tensor
+    """
+    mps = tn.replicate_nodes(mps)
+    # First, select two nodes where one has the output leg
+    output_node = mps[output_idx]
+    if output_node.shape[0] == 0:
+        # {output_node} is the leftmost node
+        # select node on right
+        node2_idx = output_idx + 1
+    elif output_node.shape[1] == 0:
+        # {output_node} is the rightmost node
+        # select node on left
+        node2_idx = output_idx - 1
+    else:
+        # Randomly select a left or right node
+        node2_idx = output_idx + np.random.choice([-1, 1])
+
+    # Partitions the MPS around the two selected nodes
+    left = np.min(output_idx, node2_idx)
+    right = np.max(output_idx, node2_idx) + 1
+    left_part = mps[:left]
+    right_part = mps[right:]
+    # Form the bond tensor
+    node2 = mps[node2_idx]
+    if output_idx < node2_idx:
+        # Connect right leg of {output_node} with left leg of {node2}
+        output_node[1] ^ node2[0]
+        bond_tensor = tn.contractors.greedy([output_node, node2])
+        return bond_tensor, left_part, right_part
+    else:
+        # Connect left leg of {output_node} with right leg of {node2}
+        node2[1] ^ output_node[0]
+        bond_tensor = tn.contractors.greedy([output_node, node2])
+        return bond_tensor, left_part, right_part
+
 
 
 def project_input(feature_tensor: tensornetwork.Node, mps_lst, j):
@@ -125,11 +172,9 @@ def sweeping_mps_optimization(Xs_tr, Ys_tr, alpha, bond_dim, num_epochs):
     """
     (img_dim, num_ex) = Xs_tr.shape
     num_labels = Ys_tr.shape[0]
+    output_idx = np.random.randint(img_dim)
     # Tensor train choo choo
-    mps_lst = [tn.Node(np.random.uniform(-100, 100, (0, bond_dim, 2, num_labels)))]
-    for i in range(img_dim - 2):
-        mps_lst.append(tn.Node(np.random.uniform(-100, 100, (bond_dim, bond_dim, 2, 0))))
-    mps_lst.append(tn.Node(np.random.uniform(-100, 100, (bond_dim, 0, 2, 0))))
+    mps = create_mps_state(img_dim, 2, bond_dim, num_labels, output_idx)
 
     project_input(Xs_tr[:, 0], mps_lst, 0)
 
