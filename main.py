@@ -18,6 +18,16 @@ from tqdm import tqdm
 mnist_data_directory = os.path.join(os.path.dirname(__file__), "data")
 
 
+def feature_map(Xs, f1, f2):
+    (d, n) = Xs.shape
+    Xs_f = np.zeros((2 * d, n))
+    for i in range(d):
+        for j in range(n):
+            Xs_f[2 * i, j] = f1(Xs[i, j])
+            Xs_f[2 * i + 1, j] = f2(Xs[i, j])
+    return Xs_f
+
+
 def load_MNIST_dataset():
     """
     Loads the MNIST dataset from data/ which has been gitignored.
@@ -29,6 +39,9 @@ def load_MNIST_dataset():
     try:
         dataset = pickle.load(open(PICKLE_FILE, 'rb'))
     except:
+        f1 = lambda x: np.cos(np.pi * x / 2)
+        f2 = lambda x: np.sin(np.pi * x / 2)
+
         # load the MNIST dataset
         mnist_data = mnist.MNIST(mnist_data_directory, return_type="numpy", gz=True)
         Xs_tr, Lbls_tr = mnist_data.load_training()
@@ -42,6 +55,7 @@ def load_MNIST_dataset():
         # End training set compression
 
         Xs_tr = Xs_tr.transpose() / 255.0
+        Xs_tr = feature_map(Xs_tr, f1, f2)
         Ys_tr = np.zeros((10, 60000))
         for i in range(60000):
             Ys_tr[Lbls_tr[i], i] = 1.0  # one-hot encode each label
@@ -58,6 +72,7 @@ def load_MNIST_dataset():
         # End test set compression
 
         Xs_te = Xs_te.transpose() / 255.0
+        Xs_te = feature_map(Xs_te, f1, f2)
         Ys_te = np.zeros((10, 10000))
         for i in range(10000):
             Ys_te[Lbls_te[i], i] = 1.0  # one-hot encode each label
@@ -144,7 +159,6 @@ def form_bond_tensor(mps, output_idx):
         return bond_tensor, left_part, right_part
 
 
-
 def project_input(feature_tensor: tensornetwork.Node, mps_lst, j):
     # Replicate the tensor representing the features of the image
     mps_lst = tn.replicate_nodes(mps_lst)
@@ -176,18 +190,18 @@ def sweeping_mps_optimization(Xs_tr, Ys_tr, alpha, bond_dim, num_epochs):
     # Tensor train choo choo
     mps = create_mps_state(img_dim, 2, bond_dim, num_labels, output_idx)
 
-    project_input(Xs_tr[:, 0], mps_lst, 0)
-
-    # Now that we have constructed the MPS, let's optimize its parameters
-    # using gradient descent
-    label_pos = 0
-    for i in tqdm(range(num_epochs)):
-        # First, form the bond tensor
-        # Remember, nodes and edges are mutable
-        node1 = mps_lst[label_pos]
-        node2 = mps_lst[label_pos + 1]
-        edge = node1[1] ^ node2[0]
-        bond = tn.contract(edge)
+    # project_input(Xs_tr[:, 0], mps_lst, 0)
+    #
+    # # Now that we have constructed the MPS, let's optimize its parameters
+    # # using gradient descent
+    # label_pos = 0
+    # for i in tqdm(range(num_epochs)):
+    #     # First, form the bond tensor
+    #     # Remember, nodes and edges are mutable
+    #     node1 = mps_lst[label_pos]
+    #     node2 = mps_lst[label_pos + 1]
+    #     edge = node1[1] ^ node2[0]
+    #     bond = tn.contract(edge)
 
 
 
