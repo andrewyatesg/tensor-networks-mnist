@@ -116,6 +116,24 @@ def create_mps_state(length, input_dim, bond_dim, output_dim, output_idx, min=-1
     return mps_lst
 
 
+def create_input_tensor(vector, dim):
+    """
+    Creates the tensor corresponding to the features {vector} of a single image.
+    :param vector: vector of the image being converted to tensor
+    :param dim: dimension of each input node leg
+    :return: a list of nodes of the tensor
+    """
+    d = vector.shape[0]
+    input_tn = []
+    # Loop through features
+    for i in range(int(d / dim)):
+        feature = np.zeros((dim, 1))
+        for j in range(dim):
+            feature[j] = vector[i + j]
+        input_tn.append(tn.Node(feature))
+    return input_tn
+
+
 def form_bond_tensor(mps, output_idx):
     """
     Forms the bond tensor and partitions the MPS around the bond tensor, returning
