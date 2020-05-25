@@ -159,8 +159,8 @@ def form_bond_tensor(mps, output_idx):
         node2_idx = output_idx + np.random.choice([-1, 1])
 
     # Partitions the MPS around the two selected nodes
-    left = np.min(output_idx, node2_idx)
-    right = np.max(output_idx, node2_idx) + 1
+    left = np.min([output_idx, node2_idx])
+    right = np.max([output_idx, node2_idx]) + 1
     left_part = mps[:left]
     right_part = mps[right:]
     # Form the bond tensor
@@ -168,13 +168,12 @@ def form_bond_tensor(mps, output_idx):
     if output_idx < node2_idx:
         # Connect right leg of {output_node} with left leg of {node2}
         output_node[1] ^ node2[0]
-        bond_tensor = tn.contractors.greedy([output_node, node2])
-        return bond_tensor, left_part, right_part
     else:
         # Connect left leg of {output_node} with right leg of {node2}
         node2[1] ^ output_node[0]
-        bond_tensor = tn.contractors.greedy([output_node, node2])
-        return bond_tensor, left_part, right_part
+    nodes = [output_node, node2]
+    bond_tensor = tn.contractors.greedy(nodes, output_edge_order=tn.get_all_dangling(nodes))
+    return bond_tensor, left_part, right_part
 
 
 def project_input(input_tensor, left_part, right_part):
@@ -194,7 +193,21 @@ def project_input(input_tensor, left_part, right_part):
     offset = len(left_part) + 2
     for i, node in enumerate(right_part):
         node[2] ^ input_tensor[offset + i][0]
-    return tn.contractors.greedy(input_tensor + left_part + right_part)
+    return input_tensor + left_part + right_part
+
+
+def inner_product(mps, input_tensor):
+    mps = tn.replicate_nodes(mps)
+    for i, node in enumerate(mps):
+        print(input_tensor[i].shape)
+        node[2] ^ input_tensor[i][0]
+    dangling = tn.get_all_dangling(mps + input_tensor)
+    print(len(dangling))
+    return tn.contractors.greedy(mps + input_tensor, output_edge_order=dangling)
+
+
+def prediction(mps, img_feature_vector):
+    return np.argmax(inner_product(mps, create_input_tensor(img_feature_vector, 2)))
 
 
 def sweeping_mps_optimization(Xs_tr, Ys_tr, alpha, bond_dim, num_epochs):
@@ -206,25 +219,28 @@ def sweeping_mps_optimization(Xs_tr, Ys_tr, alpha, bond_dim, num_epochs):
     :param alpha: step size
     :return: trained MPS
     """
-    (img_dim, num_ex) = Xs_tr.shape
+    (img_feature_dim, num_ex) = Xs_tr.shape
+    img_dim = int(img_feature_dim / 2)
     num_labels = Ys_tr.shape[0]
     output_idx = np.random.randint(img_dim)
     # Tensor train choo choo
     mps = create_mps_state(img_dim, 2, bond_dim, num_labels, output_idx)
 
-    # project_input(Xs_tr[:, 0], mps_lst, 0)
-    #
-    # # Now that we have constructed the MPS, let's optimize its parameters
-    # # using gradient descent
-    # label_pos = 0
-    # for i in tqdm(range(num_epochs)):
-    #     # First, form the bond tensor
-    #     # Remember, nodes and edges are mutable
-    #     node1 = mps_lst[label_pos]
-    #     node2 = mps_lst[label_pos + 1]
-    #     edge = node1[1] ^ node2[0]
-    #     bond = tn.contract(edge)
+    # print('Start creating input tensors')
+    # input_tensors = []
+    # for i in tqdm(range(num_ex)):
+    #     img = Xs_tr[:, i]
+    #     input_tensors.append(create_input_tensor(img, 2))
+    # print('Finished creating input tensors')
 
+    # Stochastic Gradient descent
+    for i in tqdm(range(num_epochs)):
+        sample_idx = np.random.randint(num_ex)
+        input_tensor_sample = create_input_tensor(Xs_tr[:, sample_idx], 2)
+        bond_tensor, left, right = form_bond_tensor(mps, output_idx)
+        proj = project_input(input_tensor_sample, left, right)
+        grad_tensor = tn.contractors.greedy(inner_product(mps, input_tensor_sample)).tensor
+        print(grad_tensor)
 
 
 if __name__ == "__main__":
