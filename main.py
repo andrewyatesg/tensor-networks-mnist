@@ -177,20 +177,24 @@ def form_bond_tensor(mps, output_idx):
         return bond_tensor, left_part, right_part
 
 
-def project_input(feature_tensor: tensornetwork.Node, mps_lst, j):
-    # Replicate the tensor representing the features of the image
-    mps_lst = tn.replicate_nodes(mps_lst)
-    feature_tensor = tn.replicate_nodes(feature_tensor)
-    for i, node in enumerate(feature_tensor):
-        # Connect the ith feature node to the input axis on the ith MPS tensor
-        if i != j and i != j + 1:
-            node[0] ^ mps_lst[i][2]
-    mps_lst.remove(mps_lst[j])
-    mps_lst.remove(mps_lst[j + 1])
-    # Now connect edges between mps_list nodes
-    for i in range(len(mps_lst) - 1):
-        mps_lst[i][1] ^ mps_lst[i + 1][0]
-    return tn.contractors.greedy(mps_lst + feature_tensor)
+def project_input(input_tensor, left_part, right_part):
+    """
+    Projects input tensor onto the MPS w/o the bond tensor.
+    See FIG 6(c) for a drawing of this process.
+    :param input_tensor: input image feature tensor
+    :param left_part: tensors to the left of the bond tensor
+    :param right_part: tensors to the right of the bond tensor
+    :return: input tensor projected onto left and right partitions
+    """
+    input_tensor = tn.replicate_nodes(input_tensor)
+    # Connect left partition to input nodes
+    for i, node in enumerate(left_part):
+        node[2] ^ input_tensor[i][0]
+    # Connect right partition to input nodes
+    offset = len(left_part) + 2
+    for i, node in enumerate(right_part):
+        node[2] ^ input_tensor[offset + i][0]
+    return tn.contractors.greedy(input_tensor + left_part + right_part)
 
 
 def sweeping_mps_optimization(Xs_tr, Ys_tr, alpha, bond_dim, num_epochs):
