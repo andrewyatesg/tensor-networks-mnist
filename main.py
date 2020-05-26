@@ -187,11 +187,13 @@ def form_bond_tensor(mps, output_idx):
     nodes = [output_node, node2]
     out_edge = output_node.get_edge('out')
     bond_tensor = tn.contractors.greedy(nodes, output_edge_order=[l_edge, r_edge, in1_edge, in2_edge, out_edge])
-    return bond_tensor, left_part, right_part
+    bond_tensor.add_axis_names(['l', 'r', 'in1', 'in2', 'out'])
+    return bond_tensor, left_part, right_part, output_idx < node2_idx
 
 
 def project_input(input_tensor, left_part, right_part):
     """
+    TODO: reuse projections from last iteration of SGD
     Projects input tensor onto the MPS w/o the bond tensor.
     See FIG 6(c) for a drawing of this process.
     :param input_tensor: input image feature tensor
@@ -242,6 +244,32 @@ def gradient(mps, projection, input_tensor, output):
     return tn.contractors.auto([sub, projection], output_edge_order=[l_edge, r_edge, in1_edge, in2_edge, out_edge])
 
 
+def split_bond_and_update(mps, bond, bond_dim, output_idx, prev_orientation_left):
+    # TODO: update mps in a single sweep across the tensor instead of random walk
+    if prev_orientation_left:
+        left, right, sings = tn.split_node(bond, left_edges=[bond['l'], bond['in1']],
+                                           right_edges=[bond['in2'], bond['r'], bond['out']],
+                                           max_singular_values=bond_dim, edge_name='connect')
+        left['connect'].disconnect()
+        left.add_axis_names(['l', 'in', 'r'])
+        right.add_axis_names(['l', 'in', 'r', 'out'])
+        mps[output_idx] = left
+        mps[output_idx + 1] = right
+        output_idx = output_idx + 1
+    else:
+        left, right, sings = tn.split_node(bond, left_edges=[bond['l'], bond['in1'], bond['out']],
+                                           right_edges=[bond['in2'], bond['r']],
+                                           max_singular_values=bond_dim, edge_name='connect')
+        left['connect'].disconnect()
+        left.add_axis_names(['l', 'in', 'out', 'r'])
+        right.add_axis_names(['l', 'in', 'r'])
+        mps[output_idx] = right
+        mps[output_idx - 1] = left
+        output_idx = output_idx - 1
+
+    return output_idx
+
+
 def prediction(mps, img_feature_vector):
     return np.argmax(inner_product(mps, create_input_tensor(img_feature_vector, 2)))
 
@@ -275,11 +303,12 @@ def sweeping_mps_optimization(Xs_tr, Ys_tr, alpha, bond_dim, num_epochs):
         sample_idx = np.random.randint(num_ex)
         input_tensor_sample = create_input_tensor(Xs_tr[:, sample_idx], 2)
         # Form the bond tensor and partitions
-        bond_tensor, left, right = form_bond_tensor(mps, output_idx)
+        bond_tensor, left, right, output_to_left = form_bond_tensor(mps, output_idx)
         proj = project_input(input_tensor_sample, left, right)
         grad = gradient(mps, proj, input_tensor_sample, Ys_tr[:, sample_idx])
         bond_tensor = bond_tensor - tn.Node(alpha) * grad
-        
+        bond_tensor.add_axis_names(['l', 'r', 'in1', 'in2', 'out'])
+        output_idx = split_bond_and_update(mps, bond_tensor, bond_dim, output_idx, output_to_left)
 
 
 if __name__ == "__main__":
@@ -288,5 +317,5 @@ if __name__ == "__main__":
     # print(Ys_tr.shape)
     # print(Xs_te.shape)
     # print(Ys_te.shape)
-    sweeping_mps_optimization(Xs_tr, Ys_tr, 0.1, 12, 1)
+    sweeping_mps_optimization(Xs_tr, Ys_tr, 0.1, 12, 100)
 
