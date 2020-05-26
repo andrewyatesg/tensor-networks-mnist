@@ -55,6 +55,7 @@ def load_MNIST_dataset():
         # End training set compression
 
         Xs_tr = Xs_tr.transpose() / 255.0
+        # Xs_tr = Xs_tr.transpose()
         Xs_tr = feature_map(Xs_tr, f1, f2)
         Ys_tr = np.zeros((10, 60000))
         for i in range(60000):
@@ -72,6 +73,7 @@ def load_MNIST_dataset():
         # End test set compression
 
         Xs_te = Xs_te.transpose() / 255.0
+        # Xs_te = Xs_te.transpose()
         Xs_te = feature_map(Xs_te, f1, f2)
         Ys_te = np.zeros((10, 10000))
         for i in range(10000):
@@ -83,7 +85,7 @@ def load_MNIST_dataset():
     return dataset
 
 
-def create_mps_state(length, input_dim, bond_dim, output_dim, output_idx, min=-100, max=100):
+def create_mps_state(length, input_dim, bond_dim, output_dim, output_idx, low=-100., high=100.):
     """
     Creates a MPS as a list of tensornetwork Node objects.
 
@@ -95,24 +97,27 @@ def create_mps_state(length, input_dim, bond_dim, output_dim, output_idx, min=-1
     :param bond_dim: bond dimension of MPS, for now each will be the same
     :param output_dim: output dimension of a single node in the MPS (usually 10)
     :param output_idx: index of the node to place the output leg
-    :param max: maximum value that node components can be randomly initialized to
-    :param min: minimum value that node components can be randomly initialized to
+    :param high: maximum value that node components can be randomly initialized to
+    :param low: minimum value that node components can be randomly initialized to
     :return: list of tensornetwork nodes in the proper format of [1]
     """
     # Initialize the MPS with no left leg
-    mps_lst = [tn.Node(np.random.uniform(min, max, (0, bond_dim, input_dim, 0)))]
+    mps_lst = [tn.Node(np.random.uniform(low, high, (bond_dim, input_dim)), axis_names=['r', 'in'])]
     # Add each non-endpoint node to the MPS
     for i in range(length - 2):
-        mps_lst.append(tn.Node(np.random.uniform(min, max, (bond_dim, bond_dim, input_dim, 0))))
+        mps_lst.append(tn.Node(np.random.uniform(low, high, (bond_dim, bond_dim, input_dim)), axis_names=['l', 'r', 'in']))
     # Finally add the right-most node
-    mps_lst.append(tn.Node(np.random.uniform(min, max, (bond_dim, 0, input_dim, 0))))
+    mps_lst.append(tn.Node(np.random.uniform(low, high, (bond_dim, input_dim)), axis_names=['l', 'in']))
     # Replace the node at {output_idx} with a node that has an output leg
     if output_idx == length - 1:
-        mps_lst[output_idx] = tn.Node(np.random.uniform(min, max, (bond_dim, 0, input_dim, output_dim)))
+        mps_lst[output_idx] = tn.Node(np.random.uniform(low, high, (bond_dim, input_dim, output_dim)),
+                                      axis_names=['l', 'in', 'out'])
     elif output_idx == 0:
-        mps_lst[output_idx] = tn.Node(np.random.uniform(min, max, (0, bond_dim, input_dim, output_dim)))
+        mps_lst[output_idx] = tn.Node(np.random.uniform(low, high, (bond_dim, input_dim, output_dim)),
+                                      axis_names=['r', 'in', 'out'])
     else:
-        mps_lst[output_idx] = tn.Node(np.random.uniform(min, max, (bond_dim, bond_dim, input_dim, output_dim)))
+        mps_lst[output_idx] = tn.Node(np.random.uniform(low, high, (bond_dim, bond_dim, input_dim, output_dim)),
+                                      axis_names=['l', 'r', 'in', 'out'])
     return mps_lst
 
 
@@ -127,10 +132,10 @@ def create_input_tensor(vector, dim):
     input_tn = []
     # Loop through features
     for i in range(int(d / dim)):
-        feature = np.zeros((dim, 1))
+        feature = np.zeros((dim,))
         for j in range(dim):
             feature[j] = vector[i + j]
-        input_tn.append(tn.Node(feature))
+        input_tn.append(tn.Node(feature, axis_names=['in']))
     return input_tn
 
 
@@ -167,12 +172,21 @@ def form_bond_tensor(mps, output_idx):
     node2 = mps[node2_idx]
     if output_idx < node2_idx:
         # Connect right leg of {output_node} with left leg of {node2}
-        output_node[1] ^ node2[0]
+        output_node['r'] ^ node2['l']
+        in1_edge = output_node.get_edge('in')
+        in2_edge = node2.get_edge('in')
+        l_edge = output_node.get_edge('l')
+        r_edge = node2.get_edge('r')
     else:
         # Connect left leg of {output_node} with right leg of {node2}
-        node2[1] ^ output_node[0]
+        node2['r'] ^ output_node['l']
+        in1_edge = node2.get_edge('in')
+        in2_edge = output_node.get_edge('in')
+        l_edge = node2.get_edge('l')
+        r_edge = output_node.get_edge('r')
     nodes = [output_node, node2]
-    bond_tensor = tn.contractors.greedy(nodes, output_edge_order=tn.get_all_dangling(nodes))
+    out_edge = output_node.get_edge('out')
+    bond_tensor = tn.contractors.greedy(nodes, output_edge_order=[l_edge, r_edge, in1_edge, in2_edge, out_edge])
     return bond_tensor, left_part, right_part
 
 
@@ -186,24 +200,46 @@ def project_input(input_tensor, left_part, right_part):
     :return: input tensor projected onto left and right partitions
     """
     input_tensor = tn.replicate_nodes(input_tensor)
+    # Fully connect mps
+    for i in range(len(left_part) - 1):
+        e = left_part[i]['r'] ^ left_part[i + 1]['l']
+    for i in range(len(right_part) - 1):
+        e = right_part[i]['r'] ^ right_part[i + 1]['l']
     # Connect left partition to input nodes
     for i, node in enumerate(left_part):
-        node[2] ^ input_tensor[i][0]
+        node['in'] ^ input_tensor[i]['in']
     # Connect right partition to input nodes
     offset = len(left_part) + 2
     for i, node in enumerate(right_part):
-        node[2] ^ input_tensor[offset + i][0]
-    return input_tensor + left_part + right_part
+        node['in'] ^ input_tensor[offset + i]['in']
+    l_edge = left_part[-1]['r']
+    r_edge = right_part[0]['l']
+    in1_edge = input_tensor[len(left_part)]['in']
+    in2_edge = input_tensor[len(left_part) + 1]['in']
+    return tn.contractors.auto(input_tensor + left_part + right_part, output_edge_order=[l_edge, r_edge, in1_edge, in2_edge])
 
 
 def inner_product(mps, input_tensor):
     mps = tn.replicate_nodes(mps)
+    # Fully connect mps
+    for i in range(len(mps) - 1):
+        mps[i]['r'] ^ mps[i + 1]['l']
+    # Connect inputs to mps
     for i, node in enumerate(mps):
-        print(input_tensor[i].shape)
-        node[2] ^ input_tensor[i][0]
-    dangling = tn.get_all_dangling(mps + input_tensor)
-    print(len(dangling))
-    return tn.contractors.greedy(mps + input_tensor, output_edge_order=dangling)
+        node['in'] ^ input_tensor[i]['in']
+    return mps + input_tensor
+
+
+def gradient(mps, projection, input_tensor, output):
+    mps_input_product = inner_product(mps, input_tensor)
+    dangling = tn.get_all_dangling(mps_input_product)
+    sub = tn.contractors.auto(mps_input_product, output_edge_order=dangling) - tn.Node(output)
+    out_edge = sub.get_edge(0)
+    l_edge = projection[0]
+    r_edge = projection[1]
+    in1_edge = projection[2]
+    in2_edge = projection[3]
+    return tn.contractors.auto([sub, projection], output_edge_order=[l_edge, r_edge, in1_edge, in2_edge, out_edge])
 
 
 def prediction(mps, img_feature_vector):
@@ -224,7 +260,7 @@ def sweeping_mps_optimization(Xs_tr, Ys_tr, alpha, bond_dim, num_epochs):
     num_labels = Ys_tr.shape[0]
     output_idx = np.random.randint(img_dim)
     # Tensor train choo choo
-    mps = create_mps_state(img_dim, 2, bond_dim, num_labels, output_idx)
+    mps = create_mps_state(img_dim, 2, bond_dim, num_labels, output_idx, low=0, high=0.165)
 
     # print('Start creating input tensors')
     # input_tensors = []
@@ -235,12 +271,15 @@ def sweeping_mps_optimization(Xs_tr, Ys_tr, alpha, bond_dim, num_epochs):
 
     # Stochastic Gradient descent
     for i in tqdm(range(num_epochs)):
+        # Draw random sample feature and convert to tensor
         sample_idx = np.random.randint(num_ex)
         input_tensor_sample = create_input_tensor(Xs_tr[:, sample_idx], 2)
+        # Form the bond tensor and partitions
         bond_tensor, left, right = form_bond_tensor(mps, output_idx)
         proj = project_input(input_tensor_sample, left, right)
-        grad_tensor = tn.contractors.greedy(inner_product(mps, input_tensor_sample)).tensor
-        print(grad_tensor)
+        grad = gradient(mps, proj, input_tensor_sample, Ys_tr[:, sample_idx])
+        bond_tensor = bond_tensor - tn.Node(alpha) * grad
+        
 
 
 if __name__ == "__main__":
