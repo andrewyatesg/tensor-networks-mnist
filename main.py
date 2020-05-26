@@ -275,8 +275,14 @@ def split_bond_and_update(mps, bond, bond_dim, output_idx, prev_orientation_left
                                        right_edges=right_edges,
                                        max_singular_values=bond_dim, edge_name='connect')
     left['connect'].disconnect()
-    left.add_axis_names(['l', 'in', 'r'])
-    right.add_axis_names(['l', 'in', 'r', 'out'])
+    if len(left.get_all_dangling()) < 3:
+        left.add_axis_names(['in', 'r'])
+    else:
+        left.add_axis_names(['l', 'in', 'r'])
+    if len(right.get_all_dangling()) < 4:
+        right.add_axis_names(['l', 'in', 'out'])
+    else:
+        right.add_axis_names(['l', 'in', 'r', 'out'])
     mps[output_idx] = left
     mps[output_idx + 1] = right
     output_idx = output_idx + 1
