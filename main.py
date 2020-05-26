@@ -105,7 +105,8 @@ def create_mps_state(length, input_dim, bond_dim, output_dim, output_idx, low=-1
     mps_lst = [tn.Node(np.random.uniform(low, high, (bond_dim, input_dim)), axis_names=['r', 'in'])]
     # Add each non-endpoint node to the MPS
     for i in range(length - 2):
-        mps_lst.append(tn.Node(np.random.uniform(low, high, (bond_dim, bond_dim, input_dim)), axis_names=['l', 'r', 'in']))
+        rand_tensor = np.random.uniform(low, high, (bond_dim, bond_dim, input_dim))
+        mps_lst.append(tn.Node(rand_tensor, axis_names=['l', 'r', 'in']))
     # Finally add the right-most node
     mps_lst.append(tn.Node(np.random.uniform(low, high, (bond_dim, input_dim)), axis_names=['l', 'in']))
     # Replace the node at {output_idx} with a node that has an output leg
@@ -157,9 +158,9 @@ def form_bond_tensor(mps, output_idx):
     right = np.max([output_idx, node2_idx]) + 1
     left_part = mps[:left]
     right_part = mps[right:]
+
     # Form the bond tensor
     node2 = mps[node2_idx]
-    # if output_idx < node2_idx:
     # Connect right leg of {output_node} with left leg of {node2}
     output_node['r'] ^ node2['l']
     in1_edge = output_node.get_edge('in')
@@ -169,7 +170,7 @@ def form_bond_tensor(mps, output_idx):
         r_edge = node2.get_edge('r')
         edge_order = [r_edge, in1_edge, in2_edge, out_edge]
         axis_lbs = ['r', 'in1', 'in2', 'out']
-    elif output_idx == len(mps) - 1:
+    elif output_idx == len(mps) - 2:
         l_edge = output_node.get_edge('l')
         edge_order = [l_edge, in1_edge, in2_edge, out_edge]
         axis_lbs = ['l', 'in1', 'in2', 'out']
@@ -293,7 +294,7 @@ def prediction(mps, img_feature_vector):
     return np.argmax(inner_product(mps, create_input_tensor(img_feature_vector, 2)))
 
 
-def sweeping_mps_optimization(Xs_tr, Ys_tr, alpha, bond_dim, num_epochs):
+def sweeping_mps_optimization(Xs_tr, Ys_tr, alpha, bond_dim):
     """
     Run algorithm depicted in FIG. 6 of [1].
     :param bond_dim: bond dimension
@@ -307,10 +308,10 @@ def sweeping_mps_optimization(Xs_tr, Ys_tr, alpha, bond_dim, num_epochs):
     num_labels = Ys_tr.shape[0]
     output_idx = 0
     # Tensor train choo choo
-    mps = create_mps_state(img_dim, 2, bond_dim, num_labels, output_idx, low=0, high=0.165)
+    mps = create_mps_state(img_dim, 2, bond_dim, num_labels, output_idx, low=0, high=0.1)
 
     # Stochastic Gradient descent
-    for i in tqdm(range(num_epochs)):
+    for i in tqdm(range(img_dim - 1)):
         # Draw random sample feature and convert to tensor
         sample_idx = np.random.randint(num_ex)
         input_tensor_sample = create_input_tensor(Xs_tr[:, sample_idx], 2)
@@ -321,7 +322,7 @@ def sweeping_mps_optimization(Xs_tr, Ys_tr, alpha, bond_dim, num_epochs):
         bond_tensor = bond_tensor - tn.Node(alpha) * grad
         if i == 0:
             bond_tensor.add_axis_names(['r', 'in1', 'in2', 'out'])
-        elif i == img_dim - 1:
+        elif i == img_dim - 2:
             bond_tensor.add_axis_names(['l', 'in1', 'in2', 'out'])
         else:
             bond_tensor.add_axis_names(['l', 'r', 'in1', 'in2', 'out'])
@@ -334,5 +335,5 @@ if __name__ == "__main__":
     # print(Ys_tr.shape)
     # print(Xs_te.shape)
     # print(Ys_te.shape)
-    sweeping_mps_optimization(Xs_tr, Ys_tr, 0.1, 12, 100)
+    sweeping_mps_optimization(Xs_tr, Ys_tr, 0.1, 12)
 
