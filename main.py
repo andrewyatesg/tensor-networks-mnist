@@ -151,18 +151,7 @@ def form_bond_tensor(mps, output_idx):
     mps = tn.replicate_nodes(mps)
     # First, select two nodes where one has the output leg
     output_node = mps[output_idx]
-    if output_node.shape[0] == 0:
-        # {output_node} is the leftmost node
-        # select node on right
-        node2_idx = output_idx + 1
-    elif output_node.shape[1] == 0:
-        # {output_node} is the rightmost node
-        # select node on left
-        node2_idx = output_idx - 1
-    else:
-        # Randomly select a left or right node
-        node2_idx = output_idx + np.random.choice([-1, 1])
-
+    node2_idx = output_idx + 1
     # Partitions the MPS around the two selected nodes
     left = np.min([output_idx, node2_idx])
     right = np.max([output_idx, node2_idx]) + 1
@@ -170,24 +159,27 @@ def form_bond_tensor(mps, output_idx):
     right_part = mps[right:]
     # Form the bond tensor
     node2 = mps[node2_idx]
-    if output_idx < node2_idx:
-        # Connect right leg of {output_node} with left leg of {node2}
-        output_node['r'] ^ node2['l']
-        in1_edge = output_node.get_edge('in')
-        in2_edge = node2.get_edge('in')
+    # if output_idx < node2_idx:
+    # Connect right leg of {output_node} with left leg of {node2}
+    output_node['r'] ^ node2['l']
+    in1_edge = output_node.get_edge('in')
+    in2_edge = node2.get_edge('in')
+    out_edge = output_node.get_edge('out')
+    if output_idx == 0:
+        r_edge = node2.get_edge('r')
+        edge_order = [r_edge, in1_edge, in2_edge, out_edge]
+        axis_lbs = ['r', 'in1', 'in2', 'out']
+    elif output_idx == len(mps) - 1:
+        l_edge = output_node.get_edge('l')
+        edge_order = [l_edge, in1_edge, in2_edge, out_edge]
+        axis_lbs = ['l', 'in1', 'in2', 'out']
+    else:
         l_edge = output_node.get_edge('l')
         r_edge = node2.get_edge('r')
-    else:
-        # Connect left leg of {output_node} with right leg of {node2}
-        node2['r'] ^ output_node['l']
-        in1_edge = node2.get_edge('in')
-        in2_edge = output_node.get_edge('in')
-        l_edge = node2.get_edge('l')
-        r_edge = output_node.get_edge('r')
-    nodes = [output_node, node2]
-    out_edge = output_node.get_edge('out')
-    bond_tensor = tn.contractors.greedy(nodes, output_edge_order=[l_edge, r_edge, in1_edge, in2_edge, out_edge])
-    bond_tensor.add_axis_names(['l', 'r', 'in1', 'in2', 'out'])
+        edge_order = [l_edge, r_edge, in1_edge, in2_edge, out_edge]
+        axis_lbs = ['l', 'r', 'in1', 'in2', 'out']
+    bond_tensor = tn.contractors.greedy([output_node, node2], output_edge_order=edge_order)
+    bond_tensor.add_axis_names(axis_lbs)
     return bond_tensor, left_part, right_part, output_idx < node2_idx
 
 
@@ -202,23 +194,42 @@ def project_input(input_tensor, left_part, right_part):
     :return: input tensor projected onto left and right partitions
     """
     input_tensor = tn.replicate_nodes(input_tensor)
+
     # Fully connect mps
     for i in range(len(left_part) - 1):
         e = left_part[i]['r'] ^ left_part[i + 1]['l']
     for i in range(len(right_part) - 1):
         e = right_part[i]['r'] ^ right_part[i + 1]['l']
+
     # Connect left partition to input nodes
     for i, node in enumerate(left_part):
         node['in'] ^ input_tensor[i]['in']
+
     # Connect right partition to input nodes
     offset = len(left_part) + 2
     for i, node in enumerate(right_part):
         node['in'] ^ input_tensor[offset + i]['in']
-    l_edge = left_part[-1]['r']
-    r_edge = right_part[0]['l']
+
     in1_edge = input_tensor[len(left_part)]['in']
     in2_edge = input_tensor[len(left_part) + 1]['in']
-    return tn.contractors.auto(input_tensor + left_part + right_part, output_edge_order=[l_edge, r_edge, in1_edge, in2_edge])
+
+    if len(left_part) > 0:
+        l_edge = left_part[-1]['r']
+    if len(right_part) > 0:
+        r_edge = right_part[0]['l']
+    if len(left_part) == 0:
+        edge_order = [r_edge, in1_edge, in2_edge]
+        ax_names = ['r', 'in1', 'in2']
+    elif len(right_part) == 0:
+        edge_order = [l_edge, in1_edge, in2_edge]
+        ax_names = ['l', 'in1', 'in2']
+    else:
+        edge_order = [l_edge, r_edge, in1_edge, in2_edge]
+        ax_names = ['l', 'r', 'in1', 'in2']
+
+    proj = tn.contractors.auto(input_tensor + left_part + right_part, output_edge_order=edge_order)
+    proj.add_axis_names(ax_names)
+    return proj
 
 
 def inner_product(mps, input_tensor):
@@ -237,36 +248,38 @@ def gradient(mps, projection, input_tensor, output):
     dangling = tn.get_all_dangling(mps_input_product)
     sub = tn.contractors.auto(mps_input_product, output_edge_order=dangling) - tn.Node(output)
     out_edge = sub.get_edge(0)
-    l_edge = projection[0]
-    r_edge = projection[1]
-    in1_edge = projection[2]
-    in2_edge = projection[3]
-    return tn.contractors.auto([sub, projection], output_edge_order=[l_edge, r_edge, in1_edge, in2_edge, out_edge])
+    in1_edge = projection['in1']
+    in2_edge = projection['in2']
+    edge_order = [in1_edge, in2_edge, out_edge]
+    if projection.axis_names.count('r') > 0:
+        r_edge = projection['r']
+        edge_order.insert(0, r_edge)
+    if projection.axis_names.count('l') > 0:
+        l_edge = projection['l']
+        edge_order.insert(0, l_edge)
+
+    return tn.contractors.auto([sub, projection], output_edge_order=edge_order)
 
 
 def split_bond_and_update(mps, bond, bond_dim, output_idx, prev_orientation_left):
-    # TODO: update mps in a single sweep across the tensor instead of random walk
-    if prev_orientation_left:
-        left, right, sings = tn.split_node(bond, left_edges=[bond['l'], bond['in1']],
-                                           right_edges=[bond['in2'], bond['r'], bond['out']],
-                                           max_singular_values=bond_dim, edge_name='connect')
-        left['connect'].disconnect()
-        left.add_axis_names(['l', 'in', 'r'])
-        right.add_axis_names(['l', 'in', 'r', 'out'])
-        mps[output_idx] = left
-        mps[output_idx + 1] = right
-        output_idx = output_idx + 1
-    else:
-        left, right, sings = tn.split_node(bond, left_edges=[bond['l'], bond['in1'], bond['out']],
-                                           right_edges=[bond['in2'], bond['r']],
-                                           max_singular_values=bond_dim, edge_name='connect')
-        left['connect'].disconnect()
-        left.add_axis_names(['l', 'in', 'out', 'r'])
-        right.add_axis_names(['l', 'in', 'r'])
-        mps[output_idx] = right
-        mps[output_idx - 1] = left
-        output_idx = output_idx - 1
-
+    # if prev_orientation_left:
+    left_edges = []
+    right_edges = [bond['in2']]
+    if bond.axis_names.count('l') > 0:
+        left_edges.append(bond['l'])
+    if bond.axis_names.count('r') > 0:
+        right_edges.append(bond['r'])
+    left_edges.append(bond['in1'])
+    right_edges.append(bond['out'])
+    left, right, sings = tn.split_node(bond, left_edges=left_edges,
+                                       right_edges=right_edges,
+                                       max_singular_values=bond_dim, edge_name='connect')
+    left['connect'].disconnect()
+    left.add_axis_names(['l', 'in', 'r'])
+    right.add_axis_names(['l', 'in', 'r', 'out'])
+    mps[output_idx] = left
+    mps[output_idx + 1] = right
+    output_idx = output_idx + 1
     return output_idx
 
 
@@ -286,16 +299,9 @@ def sweeping_mps_optimization(Xs_tr, Ys_tr, alpha, bond_dim, num_epochs):
     (img_feature_dim, num_ex) = Xs_tr.shape
     img_dim = int(img_feature_dim / 2)
     num_labels = Ys_tr.shape[0]
-    output_idx = np.random.randint(img_dim)
+    output_idx = 0
     # Tensor train choo choo
     mps = create_mps_state(img_dim, 2, bond_dim, num_labels, output_idx, low=0, high=0.165)
-
-    # print('Start creating input tensors')
-    # input_tensors = []
-    # for i in tqdm(range(num_ex)):
-    #     img = Xs_tr[:, i]
-    #     input_tensors.append(create_input_tensor(img, 2))
-    # print('Finished creating input tensors')
 
     # Stochastic Gradient descent
     for i in tqdm(range(num_epochs)):
@@ -307,7 +313,12 @@ def sweeping_mps_optimization(Xs_tr, Ys_tr, alpha, bond_dim, num_epochs):
         proj = project_input(input_tensor_sample, left, right)
         grad = gradient(mps, proj, input_tensor_sample, Ys_tr[:, sample_idx])
         bond_tensor = bond_tensor - tn.Node(alpha) * grad
-        bond_tensor.add_axis_names(['l', 'r', 'in1', 'in2', 'out'])
+        if i == 0:
+            bond_tensor.add_axis_names(['r', 'in1', 'in2', 'out'])
+        elif i == img_dim - 1:
+            bond_tensor.add_axis_names(['l', 'in1', 'in2', 'out'])
+        else:
+            bond_tensor.add_axis_names(['l', 'r', 'in1', 'in2', 'out'])
         output_idx = split_bond_and_update(mps, bond_tensor, bond_dim, output_idx, output_to_left)
 
 
