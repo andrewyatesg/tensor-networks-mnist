@@ -85,6 +85,20 @@ def load_MNIST_dataset():
     return dataset
 
 
+def prediction(mps, img_feature_vector):
+    prod = mps_product(mps, create_input_tensor(img_feature_vector, 2))
+    return np.argmax(np.abs(tn.contractors.auto(prod, output_edge_order=tn.get_all_dangling(prod)).tensor))
+
+
+def model_error(mps, Xs, Ys):
+    num_mis_classified = 0
+    size = int(Xs.shape[1] / 1000)
+    for i in tqdm(range(size)):
+        pred = prediction(mps, Xs[:, i])
+        num_mis_classified = num_mis_classified + int(pred != np.argmax(Ys[:, i]))
+    return float(num_mis_classified) / float(size)
+
+
 def create_mps_state(length, input_dim, bond_dim, output_dim, output_idx, low=-100., high=100.):
     """
     Creates a MPS as a list of tensornetwork Node objects.
@@ -102,13 +116,16 @@ def create_mps_state(length, input_dim, bond_dim, output_dim, output_idx, low=-1
     :return: list of tensornetwork nodes in the proper format of [1]
     """
     # Initialize the MPS with no left leg
-    mps_lst = [tn.Node(np.random.uniform(low, high, (bond_dim, input_dim)), axis_names=['r', 'in'])]
+    mps_lst = [tn.Node(np.random.normal(0, high, (bond_dim, input_dim)), axis_names=['r', 'in'])]
+    last_bond_dim = bond_dim
     # Add each non-endpoint node to the MPS
     for i in range(length - 2):
-        rand_tensor = np.random.uniform(low, high, (bond_dim, bond_dim, input_dim))
+        rand_bond = np.random.randint(2, bond_dim + 1)
+        rand_tensor = np.random.normal(0, high, (last_bond_dim, rand_bond, input_dim))
+        last_bond_dim = rand_bond
         mps_lst.append(tn.Node(rand_tensor, axis_names=['l', 'r', 'in']))
     # Finally add the right-most node
-    mps_lst.append(tn.Node(np.random.uniform(low, high, (bond_dim, input_dim)), axis_names=['l', 'in']))
+    mps_lst.append(tn.Node(np.random.normal(0, high, (last_bond_dim, input_dim)), axis_names=['l', 'in']))
     # Replace the node at {output_idx} with a node that has an output leg
     if output_idx == length - 1:
         mps_lst[output_idx] = tn.Node(np.random.uniform(low, high, (bond_dim, input_dim, output_dim)),
@@ -181,7 +198,7 @@ def form_bond_tensor(mps, output_idx):
         axis_lbs = ['l', 'r', 'in1', 'in2', 'out']
     bond_tensor = tn.contractors.greedy([output_node, node2], output_edge_order=edge_order)
     bond_tensor.add_axis_names(axis_lbs)
-    return bond_tensor, left_part, right_part, output_idx < node2_idx
+    return bond_tensor, left_part, right_part
 
 
 def project_input(input_tensor, left_part, right_part):
@@ -233,7 +250,8 @@ def project_input(input_tensor, left_part, right_part):
     return proj
 
 
-def inner_product(mps, input_tensor):
+def mps_product(mps, input_tensor):
+    input_tensor = tn.replicate_nodes(input_tensor)
     mps = tn.replicate_nodes(mps)
     # Fully connect mps
     for i in range(len(mps) - 1):
@@ -244,54 +262,61 @@ def inner_product(mps, input_tensor):
     return mps + input_tensor
 
 
-def gradient(mps, projection, input_tensor, output):
-    mps_input_product = inner_product(mps, input_tensor)
-    dangling = tn.get_all_dangling(mps_input_product)
-    sub = tn.contractors.auto(mps_input_product, output_edge_order=dangling) - tn.Node(output)
-    out_edge = sub.get_edge(0)
-    in1_edge = projection['in1']
-    in2_edge = projection['in2']
-    edge_order = [in1_edge, in2_edge, out_edge]
+def gradient(bond_tensor: tensornetwork.Node, projection: tensornetwork.Node, output):
+    projection1 = projection.copy()
+    bond_tensor = bond_tensor.copy()
+    projection1['in1'] ^ bond_tensor['in1']
+    projection1['in2'] ^ bond_tensor['in2']
+
+    projection2 = projection.copy()
+    in1_edge = projection2['in1']
+    in2_edge = projection2['in2']
+    edge_order = [in1_edge, in2_edge]
+
     if projection.axis_names.count('r') > 0:
-        r_edge = projection['r']
+        projection1['r'] ^ bond_tensor['r']
+        r_edge = projection2['r']
         edge_order.insert(0, r_edge)
     if projection.axis_names.count('l') > 0:
-        l_edge = projection['l']
+        projection1['l'] ^ bond_tensor['l']
+        l_edge = projection2['l']
         edge_order.insert(0, l_edge)
 
-    return tn.contractors.auto([sub, projection], output_edge_order=edge_order)
+    sub = tn.contractors.auto([projection1] + [bond_tensor], output_edge_order=tn.get_all_dangling([projection1] + [bond_tensor])) - tn.Node(output)
+    out_edge = sub.get_edge(0)
+    edge_order.append(out_edge)
+
+    return tn.contractors.auto([sub, projection2], output_edge_order=edge_order)
 
 
-def split_bond_and_update(mps, bond, bond_dim, output_idx, prev_orientation_left):
-    # if prev_orientation_left:
+def split_bond_and_update(mps, bond, bond_dim, output_idx):
+
     left_edges = []
-    right_edges = [bond['in2']]
     if bond.axis_names.count('l') > 0:
         left_edges.append(bond['l'])
+    left_edges.append(bond['in1'])
+
+    right_edges = [bond['in2']]
     if bond.axis_names.count('r') > 0:
         right_edges.append(bond['r'])
-    left_edges.append(bond['in1'])
     right_edges.append(bond['out'])
-    left, right, sings = tn.split_node(bond, left_edges=left_edges,
-                                       right_edges=right_edges,
+    left, right, sings = tn.split_node(bond, left_edges=left_edges, right_edges=right_edges,
                                        max_singular_values=bond_dim, edge_name='connect')
     left['connect'].disconnect()
     if len(left.get_all_dangling()) < 3:
         left.add_axis_names(['in', 'r'])
     else:
         left.add_axis_names(['l', 'in', 'r'])
+
     if len(right.get_all_dangling()) < 4:
         right.add_axis_names(['l', 'in', 'out'])
     else:
         right.add_axis_names(['l', 'in', 'r', 'out'])
+
     mps[output_idx] = left
     mps[output_idx + 1] = right
     output_idx = output_idx + 1
-    return output_idx
-
-
-def prediction(mps, img_feature_vector):
-    return np.argmax(inner_product(mps, create_input_tensor(img_feature_vector, 2)))
+    return mps, output_idx
 
 
 def sweeping_mps_optimization(Xs_tr, Ys_tr, alpha, bond_dim):
@@ -308,25 +333,26 @@ def sweeping_mps_optimization(Xs_tr, Ys_tr, alpha, bond_dim):
     num_labels = Ys_tr.shape[0]
     output_idx = 0
     # Tensor train choo choo
-    mps = create_mps_state(img_dim, 2, bond_dim, num_labels, output_idx, low=0, high=0.1)
-
+    mps = create_mps_state(img_dim, 2, bond_dim, num_labels, output_idx, low=0, high=1/bond_dim)
     # Stochastic Gradient descent
     for i in tqdm(range(img_dim - 1)):
         # Draw random sample feature and convert to tensor
         sample_idx = np.random.randint(num_ex)
         input_tensor_sample = create_input_tensor(Xs_tr[:, sample_idx], 2)
         # Form the bond tensor and partitions
-        bond_tensor, left, right, output_to_left = form_bond_tensor(mps, output_idx)
+        bond_tensor, left, right = form_bond_tensor(mps, output_idx)
         proj = project_input(input_tensor_sample, left, right)
-        grad = gradient(mps, proj, input_tensor_sample, Ys_tr[:, sample_idx])
-        bond_tensor = bond_tensor - tn.Node(alpha) * grad
+        grad = gradient(bond_tensor, proj, Ys_tr[:, sample_idx])
+        bond_tensor = tn.Node(bond_tensor.tensor - alpha * grad.tensor)
         if i == 0:
             bond_tensor.add_axis_names(['r', 'in1', 'in2', 'out'])
         elif i == img_dim - 2:
             bond_tensor.add_axis_names(['l', 'in1', 'in2', 'out'])
         else:
             bond_tensor.add_axis_names(['l', 'r', 'in1', 'in2', 'out'])
-        output_idx = split_bond_and_update(mps, bond_tensor, bond_dim, output_idx, output_to_left)
+        mps, output_idx = split_bond_and_update(mps, bond_tensor, bond_dim, output_idx)
+        print('Training: ' + str(model_error(mps, Xs_tr, Ys_tr)))
+    # print('Training Error ' + str(model_error(mps, Xs_tr, Ys_tr)))
 
 
 if __name__ == "__main__":
@@ -335,5 +361,10 @@ if __name__ == "__main__":
     # print(Ys_tr.shape)
     # print(Xs_te.shape)
     # print(Ys_te.shape)
-    sweeping_mps_optimization(Xs_tr, Ys_tr, 0.1, 12)
+    sweeping_mps_optimization(Xs_tr, Ys_tr, 0.1, 15)
+    # matrices = [np.random.standard_normal((2, 2)) for i in range(500)]
+    # running_product = np.random.standard_normal((2, 2))
+    # for matrix in matrices:
+    #     running_product = matrix @ running_product
+    #     print(running_product)
 
