@@ -4,7 +4,7 @@ import tensornetwork as tn
 from typing import Any, List, Optional, Text, Type, Union, Dict, Sequence, Tuple
 
 class FeatureTensor:
-    def __init__(self, input: np.ndarray, idx: int = -1, feature_map=None):
+    def __init__(self, input: np.ndarray, feature_map=None):
         """
         Represents a "feature tensor" obtained from applying {feature_map}
         uniformly to every component of the vector {input}.
@@ -15,7 +15,6 @@ class FeatureTensor:
         """
         self.input = input
         self.feature_map = feature_map
-        self.idx = idx
 
     @classmethod
     def apply_feature_map(cls, vec, feature_map):

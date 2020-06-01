@@ -134,9 +134,9 @@ def sweeping_mps_optimization(Xs_tr, Ys_tr, alpha, bond_dim, num_epochs):
 
     model = MPS.random(bond_dim, 2, num_labels, img_dim)
 
-    training_sample_size = 10000
+    training_sample_size = 1000
     sample_idxs = np.random.randint(num_ex, size=training_sample_size)
-    num_threads = 100
+    num_threads = 10
     Xs_tr_sample = Xs_tr[:, sample_idxs]
     Ys_tr_sample = Ys_tr[:, sample_idxs]
     sweep = sweeper.Sweeper(model, Xs_tr_sample, Ys_tr_sample)

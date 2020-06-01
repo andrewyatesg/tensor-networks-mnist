@@ -1,3 +1,5 @@
+import time
+
 from mps import MPS
 from feature_tensor import FeatureTensor
 import numpy as np
@@ -25,29 +27,33 @@ class Sweeper:
     def __leftmost__(self):
         return self.mps.output_idx == 0
 
-    def __contract_with_right(self, right: List[Node], input_tensor: List[Node]) -> Union[BaseNode, Node]:
+    def __contract_with_right(self, input_tensor: List[Node]) -> Union[BaseNode, Node]:
+        right = self.mps.get_right()
         MPS.connect_mps_tensors(right)
         offset = self.mps.output_idx + 2
         for i in range(len(right)):
             right[i]['in'] ^ input_tensor[offset + i]['in']
-        contracted_right = tn.contractors.auto(right + input_tensor[offset:])
+        time1 = time.time()
+        contracted_right = tn.contractors.greedy(right + input_tensor[offset:])
+        time2 = time.time()
+        print('Time {}'.format(time2 - time1))
         contracted_right.add_axis_names(['in'])
+
         return contracted_right
 
-    def __projection__(self, feature: FeatureTensor) -> List[Union[Node, BaseNode]]:
-        input_tensor = feature.get_nodes()
+    def __projection__(self, input_idx: int) -> List[Union[Node, BaseNode]]:
         leftmost = self.__leftmost__()
-        right = self.mps.get_right()
+        input_tensor = FeatureTensor(self.Xs[:, input_idx]).get_nodes()
         if leftmost:
             node2 = input_tensor[0]
             node3 = input_tensor[1]
-            node4 = self.__contract_with_right(right, input_tensor)
+            node4 = self.__contract_with_right(input_tensor)
             return [node2, node3, node4]
         else:
-            node1 = self.projections[feature.idx]
+            node1 = self.projections[input_idx]
             node2 = input_tensor[self.mps.output_idx]
             node3 = input_tensor[self.mps.output_idx + 1]
-            node4 = self.__contract_with_right(right, input_tensor)
+            node4 = self.__contract_with_right(input_tensor)
             return [node1, node2, node3, node4]
 
     def __gradient__(self, input_idx: int) -> np.ndarray:
@@ -58,8 +64,7 @@ class Sweeper:
         :param input_tensor: tensor formed from the input vector
         :return: d<MPS|input_tensor>/d{bond}
         """
-        feature = FeatureTensor(self.Xs[:, input_idx], input_idx)
-        proj = self.__projection__(feature)
+        proj = self.__projection__(input_idx)
         bond = self.mps.get_contracted_bond()
 
         leftmost = self.__leftmost__()
@@ -96,7 +101,7 @@ class Sweeper:
     def __precompute_projections__(self, input_idx: int):
         # We have this redefinition bc this method is called after we update the MPS
         # and translate its output label to the right
-        feature = FeatureTensor(self.Xs[:, input_idx], input_idx)
+        feature = FeatureTensor(self.Xs[:, input_idx])
         output_idx = self.mps.output_idx - 1
         leftmost = output_idx == 0
         input_tensor = feature.get_nodes()
@@ -106,16 +111,16 @@ class Sweeper:
             node2_cpy['in'] ^ above_node2['in']
             precomputed_proj = tn.contractors.auto([node2_cpy, above_node2])
             precomputed_proj.add_axis_names(['in'])
-            self.projections[feature.idx] = precomputed_proj
+            self.projections[input_idx] = precomputed_proj
         else:
-            node1_cpy = self.projections[feature.idx]
+            node1_cpy = self.projections[input_idx]
             node2_cpy = input_tensor[output_idx]
             above_node2 = self.mps.tensors[output_idx].copy()
             node1_cpy['in'] ^ above_node2['l']
             node2_cpy['in'] ^ above_node2['in']
             precomputed_proj = tn.contractors.auto([node1_cpy, node2_cpy, above_node2])
             precomputed_proj.add_axis_names(['in'])
-            self.projections[feature.idx] = precomputed_proj
+            self.projections[input_idx] = precomputed_proj
 
     def __add_newbond_names__(self, bond_tensor):
         output_idx = self.mps.output_idx
@@ -142,7 +147,7 @@ class Sweeper:
 
         def thread_main(ithread):
             grad = np.zeros(bond_shape)
-            for i in range(ithread * num_per_thd, (ithread + 1) * num_per_thd):
+            for i in np.arange(ithread * num_per_thd, (ithread + 1) * num_per_thd):
                 grad = grad + self.__gradient__(i)
             grads[ithread] = grad
             iter_barrier.wait()
