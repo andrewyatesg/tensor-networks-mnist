@@ -18,14 +18,28 @@ class Sweeper:
         self.Ys = Ys_batch
         # Left-most projection node for each vector in Xs_batch
         # This is so we don't have to recompute it after every translation
-        self.projections : List[Node] = []
+        self.projections1 : List[Node] = []
         self.feature_map = feature_map
 
-    def update_projection(self, input_idx: int, projection: Node):
-        self.projections[input_idx] = projection
+    def __contract_with_right(self, right: List[Node], input_tensor: List[Node]) -> Union[BaseNode, Node]:
+        MPS.connect_mps_tensors(right)
+        offset = self.mps.output_idx + 2
+        for i in range(len(right)):
+            right[i]['in'] ^ input_tensor[offset + i]['in']
+        contracted_right = tn.contractors.auto(right + input_tensor[offset:])
+        return contracted_right
 
     def __projection__(self, feature: FeatureTensor) -> List[Union[Node, BaseNode]]:
-        # todo
+        input_tensor = feature.get_nodes()
+        leftmost = self.mps.output_idx == 0
+        right = self.mps.get_right()
+        if leftmost:
+            node1 = input_tensor[0]
+            node1.add_axis_names(['in2'])
+            node2 = input_tensor[1]
+            node1.add_axis_names(['in3'])
+            node3 = self.__contract_with_right(right, input_tensor)
+            node3.add_axis_names(['in4'])
 
     def __gradient__(self, input_idx: int) -> np.ndarray:
         """

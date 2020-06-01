@@ -45,6 +45,12 @@ class MPS:
         boundary_right[0, :] = 1
         mps.add_node(MPS.perturb_matrix(boundary_right, std))
 
+    @classmethod
+    def connect_mps_tensors(cls, tensors: List[Node]) -> None:
+        # Fully connect mps
+        for i in range(len(tensors) - 1):
+            tensors[i]['r'] ^ tensors[i + 1]['l']
+
     def add_node(self, matrix: np.ndarray) -> None:
         bond_dim = matrix.shape[0]
         if len(matrix.shape) != 3 and len(matrix.shape) != 2:
@@ -103,6 +109,9 @@ class MPS:
         edge_order, axis_lbs = self.get_bond_axis_names_edge_order()
         bond = tn.contractors.auto(bond, output_edge_order=edge_order)
         bond.add_axis_names(axis_lbs)
+
+    def get_right(self):
+        return tn.replicate_nodes(self.tensors[self.output_idx + 2:])
 
     def update_bond(self, new_bond: Node, max_singular_values: int) -> Union[Node, BaseNode]:
         """

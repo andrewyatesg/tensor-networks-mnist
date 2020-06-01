@@ -1,6 +1,7 @@
 import numpy as np
 import math
 import tensornetwork as tn
+from typing import Any, List, Optional, Text, Type, Union, Dict, Sequence, Tuple
 
 class FeatureTensor:
     def __init__(self, input: np.ndarray, feature_map=None):
@@ -21,11 +22,17 @@ class FeatureTensor:
             feature.append(feature_map(vec[i]))
         return np.array(feature)
 
-    def get_node(self):
+    def get_nodes(self) -> List[tn.Node]:
         if self.feature_map is not None:
             feature_vector = FeatureTensor.apply_feature_map(self.input, self.feature_map)
         else:
             feature_vector = self.input
         if len(feature_vector.shape) != 1:
             raise ValueError('Feature vector does not produce a vector.')
-        return tn.Node(feature_vector, axis_names=['in'])
+        d = feature_vector.shape[0]
+        input_tn = []
+        # Loop through features
+        for i in range(int(d / 2)):
+            feature = np.array([feature_vector[2 * i], feature_vector[2 * i + 1]])
+            input_tn.append(tn.Node(feature, axis_names=['in']))
+        return input_tn
