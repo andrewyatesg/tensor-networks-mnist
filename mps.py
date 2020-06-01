@@ -44,6 +44,7 @@ class MPS:
         boundary_right = np.zeros((bond_dim, physical_dim))
         boundary_right[0, :] = 1
         mps.add_node(MPS.perturb_matrix(boundary_right, std))
+        return mps
 
     @classmethod
     def connect_mps_tensors(cls, tensors: List[Node]) -> None:
@@ -83,9 +84,9 @@ class MPS:
 
         return [output_node, node2]
 
-    def get_bond_axis_names_edge_order(self) -> Tuple[List[Edge], List[str]]:
-        output_node = self.tensors[self.output_idx]
-        node2 = self.tensors[self.output_idx + 1]
+    def get_bond_axis_names_edge_order(self, bond) -> Tuple[List[Edge], List[str]]:
+        output_node = bond[0]
+        node2 = bond[1]
         in1_edge = output_node.get_edge('in')
         in2_edge = node2.get_edge('in')
         out_edge = output_node.get_edge('out')
@@ -104,16 +105,17 @@ class MPS:
 
         return edge_order, axis_lbs
 
-    def get_contracted_bond(self):
+    def get_contracted_bond(self) -> Union[BaseNode, Node]:
         bond = self.form_bond_tensor()
-        edge_order, axis_lbs = self.get_bond_axis_names_edge_order()
+        edge_order, axis_lbs = self.get_bond_axis_names_edge_order(bond)
         bond = tn.contractors.auto(bond, output_edge_order=edge_order)
         bond.add_axis_names(axis_lbs)
+        return bond
 
     def get_right(self):
         return tn.replicate_nodes(self.tensors[self.output_idx + 2:])
 
-    def update_bond(self, new_bond: Node, max_singular_values: int) -> Union[Node, BaseNode]:
+    def update_bond(self, new_bond: Node, max_singular_values: int) -> None:
         """
         Updates the bond tensor of this MPS with {new_bond} by performing a SVD on new_bond,
         keeping the {max_singular_values} largest singular values of {new_bond}.
@@ -155,4 +157,3 @@ class MPS:
         self.tensors[self.output_idx] = left
         self.tensors[self.output_idx + 1] = right
         self.output_idx = self.output_idx + 1
-        return left

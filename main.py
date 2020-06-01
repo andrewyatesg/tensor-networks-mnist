@@ -14,6 +14,9 @@ import pickle
 import skimage.measure
 import tensornetwork.visualization.graphviz
 from tqdm import tqdm
+from mps import MPS
+import sweeper
+import feature_tensor
 
 mnist_data_directory = os.path.join(os.path.dirname(__file__), "data")
 
@@ -87,7 +90,8 @@ def load_MNIST_dataset():
 
 
 def prediction(mps, img_feature_vector):
-    prod = mps_product(mps, create_input_tensor(img_feature_vector))
+    nodes = feature_tensor.FeatureTensor(img_feature_vector).get_nodes()
+    prod = mps_product(mps, nodes)
     return np.argmax(np.abs(tn.contractors.auto(prod, output_edge_order=tn.get_all_dangling(prod)).tensor))
 
 
@@ -98,66 +102,6 @@ def model_error(mps, Xs, Ys):
         pred = prediction(mps, Xs[:, np.random.randint(Xs.shape[1])])
         num_mis_classified = num_mis_classified + int(pred != np.argmax(Ys[:, i]))
     return float(num_mis_classified) / float(size)
-
-
-def create_input_tensor(vector):
-    """
-    Creates the tensor corresponding to the features {vector} of a single image.
-    :param vector: vector of the image being converted to tensor
-    :param dim: dimension of each input node leg
-    :return: a list of nodes of the tensor
-    """
-    d = vector.shape[0]
-    input_tn = []
-    # Loop through features
-    for i in range(int(d / 2)):
-        feature = np.array([vector[2 * i], vector[2 * i + 1]])
-        input_tn.append(tn.Node(feature, axis_names=['in']))
-    return input_tn
-
-
-def project_input(input_tensor, right_part, previous_projection, output_idx, last_node):
-    """
-    Projects input tensor onto the MPS w/o the bond tensor.
-    See FIG 6(c) for a drawing of this process.
-
-    :param input_tensor: input image feature tensor
-    :param right_part: tensors to the right of the bond tensor
-    :return: input tensor projected onto left and right partitions
-    """
-    input_tensor = tn.replicate_nodes(input_tensor)
-    right_part = tn.replicate_nodes(right_part)
-
-    if previous_projection is not None:
-        last_node = last_node.copy()
-        leftmost_before = previous_projection[0] is None
-        if leftmost_before:
-            node2_prev = previous_projection[1].copy()
-            node2_prev['in'] ^ last_node['in']
-            node1 = tn.contractors.auto([node2_prev, last_node])
-        else:
-            node1_prev = previous_projection[0].copy()
-            node2_prev = previous_projection[1].copy()
-            node1_prev['in'] ^ last_node['l']
-            node2_prev['in'] ^ last_node['in']
-            node1 = tn.contractors.auto([node1_prev, node2_prev, last_node])
-        node1.add_axis_names(['in'])
-    else:
-        node1 = None
-
-    node2 = input_tensor[output_idx].copy()
-    node3 = input_tensor[output_idx + 1].copy()
-
-    # Connect right partition to input nodes
-    for i in range(len(right_part) - 1):
-        right_part[i]['r'] ^ right_part[i + 1]['l']
-    offset = output_idx + 2
-    for i, node in enumerate(right_part):
-        node['in'] ^ input_tensor[offset + i]['in']
-    node4 = tn.contractors.auto(right_part + input_tensor[offset:])
-    node4.add_axis_names(['in'])
-
-    return [node1, node2, node3, node4]
 
 
 def mps_product(mps, input_tensor):
@@ -175,7 +119,7 @@ def mps_product(mps, input_tensor):
     return mps + input_tensor
 
 
-def sweeping_mps_optimization(Xs_tr, Ys_tr, alpha, bond_dim):
+def sweeping_mps_optimization(Xs_tr, Ys_tr, alpha, bond_dim, num_epochs):
     """
     Run algorithm depicted in FIG. 6 of [1].
     :param bond_dim: bond dimension
@@ -188,47 +132,21 @@ def sweeping_mps_optimization(Xs_tr, Ys_tr, alpha, bond_dim):
     img_dim = int(img_feature_dim / 2)
     num_labels = Ys_tr.shape[0]
 
-    output_idx = 0
-    mps = create_mps_state(img_dim, 2, bond_dim, num_labels)
+    model = MPS.random(bond_dim, 2, num_labels, img_dim)
 
-    alpha = tn.Node(alpha)
-
-    batch_size = 20
-    sample_idxs = np.random.randint(num_ex, size=batch_size)
-    previous_projections = [None] * batch_size
-
-    # Stochastic Gradient descent
-    for i in tqdm(range(img_dim - 2)):
-        # Form the bond tensor and partitions
-        bond_tensor, left, right = form_bond_tensor(mps, output_idx)
-        # Initialize gradient to zero
-        grad = tn.Node(np.zeros_like(bond_tensor, dtype=float))
-        for j in range(batch_size):
-            # Draw random sample feature and convert to tensor
-            sample_idx = sample_idxs[j]
-            # Form the tensor for the sample
-            input_tensor_sample = create_input_tensor(Xs_tr[:, sample_idx])
-            # Project input onto MPS (w/o the bond tensor)
-            proj = project_input(input_tensor_sample, right, previous_projections[j], output_idx, mps[output_idx - 1])
-            previous_projections[j] = proj
-            # Update the gradient
-            grad = grad + gradient(bond_tensor, proj, Ys_tr[:, sample_idx])
-
-        # Update bond tensor with via gradient descent like scheme
-        bond_tensor = bond_tensor - alpha * grad
-        if i == 0:
-            bond_tensor.add_axis_names(['r', 'in1', 'in2', 'out'])
-        elif i == img_dim - 2:
-            bond_tensor.add_axis_names(['l', 'in1', 'in2', 'out'])
-        else:
-            bond_tensor.add_axis_names(['l', 'r', 'in1', 'in2', 'out'])
-
-        mps, output_idx = split_bond_and_update(mps, bond_tensor, bond_dim, output_idx)
-        # print(np.max(bond_tensor.tensor))
-    print('Training Error ' + str(model_error(mps, Xs_tr, Ys_tr)))
+    training_sample_size = 10000
+    sample_idxs = np.random.randint(num_ex, size=training_sample_size)
+    num_threads = 100
+    Xs_tr_sample = Xs_tr[:, sample_idxs]
+    Ys_tr_sample = Ys_tr[:, sample_idxs]
+    sweep = sweeper.Sweeper(model, Xs_tr_sample, Ys_tr_sample)
+    is_running = True
+    while is_running:
+        is_running = sweep.translate(alpha, bond_dim, num_threads)
+        print('Training Error ' + str(model_error(model.tensors, Xs_tr, Ys_tr)))
 
 
 if __name__ == "__main__":
     (Xs_tr, Ys_tr, Xs_te, Ys_te) = load_MNIST_dataset()
-    sweeping_mps_optimization(Xs_tr, Ys_tr, 0.01, 25)
+    sweeping_mps_optimization(Xs_tr, Ys_tr, 0.01, 25, 1)
 
