@@ -12,15 +12,15 @@ import matplotlib
 import matplotlib.pyplot as plt
 import pickle
 import skimage.measure
-from tensornetwork import FiniteMPS
 import tensornetwork.visualization.graphviz
 from tqdm import tqdm
 
 mnist_data_directory = os.path.join(os.path.dirname(__file__), "data")
 
-
 f1 = lambda x: np.cos(np.pi * x / 2)
 f2 = lambda x: np.sin(np.pi * x / 2)
+f = lambda x: np.array(f1(x), f2(x))
+
 
 def feature_map(Xs):
     (d, n) = Xs.shape
@@ -93,41 +93,11 @@ def prediction(mps, img_feature_vector):
 
 def model_error(mps, Xs, Ys):
     num_mis_classified = 0
-    size = int(Xs.shape[1] / 100)
+    size = int(Xs.shape[1] / 1000)
     for i in range(size):
-        pred = prediction(mps, Xs[:, i])
+        pred = prediction(mps, Xs[:, np.random.randint(Xs.shape[1])])
         num_mis_classified = num_mis_classified + int(pred != np.argmax(Ys[:, i]))
     return float(num_mis_classified) / float(size)
-
-
-def create_mps_state(length, input_dim, bond_dim, output_dim, width=100.):
-    """
-    Creates a MPS as a list of tensornetwork Node objects.
-
-    For convenience, each node in the network will have shape (left, right, input, output)
-    If a node doesn't have a left or right left (i.e. the endpoint nodes) then these
-    dimensions will be set to zero
-    :param length: number of nodes
-    :param input_dim: input dimension of each node (usually 2)
-    :param bond_dim: bond dimension of MPS, for now each will be the same
-    :param output_dim: output dimension of a single node in the MPS (usually 10)
-    :return: list of tensornetwork nodes in the proper format of [1]
-    """
-    # Initialize the MPS with no left leg
-    mps_lst = [tn.Node(np.random.normal(0, width, (bond_dim, input_dim, output_dim)), axis_names=['r', 'in', 'out'])]
-    last_bond_dim = bond_dim
-
-    # Add each non-endpoint node to the MPS
-    for i in range(length - 2):
-        rand_bond = np.random.randint(2, bond_dim + 1)
-        rand_tensor = np.random.normal(0, width, (last_bond_dim, rand_bond, input_dim))
-        last_bond_dim = rand_bond
-        mps_lst.append(tn.Node(rand_tensor, axis_names=['l', 'r', 'in']))
-
-    # Finally add the right-most node
-    mps_lst.append(tn.Node(np.random.normal(0, width, (last_bond_dim, input_dim)), axis_names=['l', 'in']))
-
-    return mps_lst
 
 
 def create_input_tensor(vector):
@@ -146,97 +116,48 @@ def create_input_tensor(vector):
     return input_tn
 
 
-def form_bond_tensor(mps, output_idx):
+def project_input(input_tensor, right_part, previous_projection, output_idx, last_node):
     """
-    Forms the bond tensor and partitions the MPS around the bond tensor, returning
-    the bond tensor and both partitions.
-
-    :param mps: the list of nodes corresponding to the MPS
-    :param output_idx: the index of the node with the output leg
-    :return: triple (bond, left, right) where {bond} is the bond tensor, {left} ({right})
-    is the partition to the left (right) of the bond tensor
-    """
-    mps = tn.replicate_nodes(mps)
-
-    # First, select two nodes where one has the output leg
-    output_node = mps[output_idx]
-    node2_idx = output_idx + 1
-    node2 = mps[node2_idx]
-
-    # Partitions the MPS around the two selected nodes
-    left_part = mps[:output_idx]
-    right_part = mps[node2_idx + 1:]
-
-    # Connect right leg of {output_node} with left leg of {node2}
-    output_node['r'] ^ node2['l']
-    in1_edge = output_node.get_edge('in')
-    in2_edge = node2.get_edge('in')
-    out_edge = output_node.get_edge('out')
-    edge_order = [in1_edge, in2_edge, out_edge]
-    axis_lbs = ['in1', 'in2', 'out']
-
-    if node2.axis_names.count('r') > 0:
-        r_edge = node2['r']
-        edge_order.insert(0, r_edge)
-        axis_lbs.insert(0, 'r')
-
-    if output_node.axis_names.count('l') > 0:
-        l_edge = output_node['l']
-        edge_order.insert(0, l_edge)
-        axis_lbs.insert(0, 'l')
-
-    bond_tensor = tn.contractors.greedy([output_node, node2], output_edge_order=edge_order)
-    bond_tensor.add_axis_names(axis_lbs)
-    return bond_tensor, left_part, right_part
-
-
-def project_input(input_tensor, left_part, right_part):
-    """
-    TODO: reuse projections from last iteration of SGD
-    TODO: reuse the MPS contraction from previous iteration
     Projects input tensor onto the MPS w/o the bond tensor.
     See FIG 6(c) for a drawing of this process.
 
     :param input_tensor: input image feature tensor
-    :param left_part: tensors to the left of the bond tensor
     :param right_part: tensors to the right of the bond tensor
     :return: input tensor projected onto left and right partitions
     """
     input_tensor = tn.replicate_nodes(input_tensor)
-    left_part = tn.replicate_nodes(left_part)
     right_part = tn.replicate_nodes(right_part)
 
-    # Fully connect mps
-    for i in range(len(left_part) - 1):
-        left_part[i]['r'] ^ left_part[i + 1]['l']
-    for i in range(len(right_part) - 1):
-        right_part[i]['r'] ^ right_part[i + 1]['l']
+    if previous_projection is not None:
+        last_node = last_node.copy()
+        leftmost_before = previous_projection[0] is None
+        if leftmost_before:
+            node2_prev = previous_projection[1].copy()
+            node2_prev['in'] ^ last_node['in']
+            node1 = tn.contractors.auto([node2_prev, last_node])
+        else:
+            node1_prev = previous_projection[0].copy()
+            node2_prev = previous_projection[1].copy()
+            node1_prev['in'] ^ last_node['l']
+            node2_prev['in'] ^ last_node['in']
+            node1 = tn.contractors.auto([node1_prev, node2_prev, last_node])
+        node1.add_axis_names(['in'])
+    else:
+        node1 = None
 
-    # Connect left partition to input nodes
-    for i, node in enumerate(left_part):
-        node['in'] ^ input_tensor[i]['in']
+    node2 = input_tensor[output_idx].copy()
+    node3 = input_tensor[output_idx + 1].copy()
 
     # Connect right partition to input nodes
-    offset = len(left_part) + 2
+    for i in range(len(right_part) - 1):
+        right_part[i]['r'] ^ right_part[i + 1]['l']
+    offset = output_idx + 2
     for i, node in enumerate(right_part):
         node['in'] ^ input_tensor[offset + i]['in']
+    node4 = tn.contractors.auto(right_part + input_tensor[offset:])
+    node4.add_axis_names(['in'])
 
-    in1_edge = input_tensor[len(left_part)]['in']
-    in2_edge = input_tensor[len(left_part) + 1]['in']
-    edge_order = [in1_edge, in2_edge]
-    axe_names = ['in1', 'in2']
-    if len(right_part) > 0:
-        r_edge = right_part[0]['l']
-        edge_order.insert(0, r_edge)
-        axe_names.insert(0, 'r')
-    if len(left_part) > 0:
-        l_edge = left_part[-1]['r']
-        edge_order.insert(0, l_edge)
-        axe_names.insert(0, 'l')
-
-    proj = tn.contractors.auto(input_tensor + left_part + right_part, output_edge_order=edge_order)
-    proj.add_axis_names(axe_names)
-    return proj
+    return [node1, node2, node3, node4]
 
 
 def mps_product(mps, input_tensor):
@@ -254,67 +175,6 @@ def mps_product(mps, input_tensor):
     return mps + input_tensor
 
 
-def gradient(bond_tensor: tensornetwork.Node, projection: tensornetwork.Node, output_vector):
-    bond_tensor = bond_tensor.copy()
-
-    projection1 = projection.copy()
-    projection1['in1'] ^ bond_tensor['in1']
-    projection1['in2'] ^ bond_tensor['in2']
-    if projection1.axis_names.count('l') > 0:
-        projection1['l'] ^ bond_tensor['l']
-    if projection1.axis_names.count('r') > 0:
-        projection1['r'] ^ bond_tensor['r']
-    out_edge = bond_tensor['out']
-    mps_product = tn.contractors.auto([projection1, bond_tensor], output_edge_order=[out_edge]) - tn.Node(output_vector)
-    mps_product.add_axis_names(['out'])
-
-    projection2 = projection.copy()
-    in1_edge = projection2['in1']
-    in2_edge = projection2['in2']
-    edge_order = [in1_edge, in2_edge]
-    if projection2.axis_names.count('r') > 0:
-        r_edge = projection2['r']
-        edge_order.insert(0, r_edge)
-    if projection2.axis_names.count('l') > 0:
-        l_edge = projection2['l']
-        edge_order.insert(0, l_edge)
-
-    edge_order.append(mps_product['out'])
-    return tn.contractors.auto([mps_product, projection2], output_edge_order=edge_order)
-
-
-def split_bond_and_update(mps, bond, bond_dim, output_idx):
-    bond = bond.copy()
-
-    left_edges = []
-    if bond.axis_names.count('l') > 0:
-        left_edges.append(bond['l'])
-    left_edges.append(bond['in1'])
-
-    right_edges = [bond['in2']]
-    if bond.axis_names.count('r') > 0:
-        right_edges.append(bond['r'])
-    right_edges.append(bond['out'])
-
-    left, right, sings = tn.split_node(bond, left_edges=left_edges, right_edges=right_edges,
-                                       max_singular_values=bond_dim, edge_name='connect')
-    left['connect'].disconnect()
-    if len(left.get_all_dangling()) < 3:
-        left.add_axis_names(['in', 'r'])
-    else:
-        left.add_axis_names(['l', 'in', 'r'])
-
-    if len(right.get_all_dangling()) < 4:
-        right.add_axis_names(['l', 'in', 'out'])
-    else:
-        right.add_axis_names(['l', 'in', 'r', 'out'])
-
-    mps[output_idx] = left
-    mps[output_idx + 1] = right
-    output_idx = output_idx + 1
-    return mps, output_idx
-
-
 def sweeping_mps_optimization(Xs_tr, Ys_tr, alpha, bond_dim):
     """
     Run algorithm depicted in FIG. 6 of [1].
@@ -329,14 +189,16 @@ def sweeping_mps_optimization(Xs_tr, Ys_tr, alpha, bond_dim):
     num_labels = Ys_tr.shape[0]
 
     output_idx = 0
-    mps = create_mps_state(img_dim, 2, bond_dim, num_labels, width=1/bond_dim)
+    mps = create_mps_state(img_dim, 2, bond_dim, num_labels)
 
     alpha = tn.Node(alpha)
 
-    batch_size = 100
+    batch_size = 20
     sample_idxs = np.random.randint(num_ex, size=batch_size)
+    previous_projections = [None] * batch_size
+
     # Stochastic Gradient descent
-    for i in tqdm(range(img_dim - 1)):
+    for i in tqdm(range(img_dim - 2)):
         # Form the bond tensor and partitions
         bond_tensor, left, right = form_bond_tensor(mps, output_idx)
         # Initialize gradient to zero
@@ -347,7 +209,8 @@ def sweeping_mps_optimization(Xs_tr, Ys_tr, alpha, bond_dim):
             # Form the tensor for the sample
             input_tensor_sample = create_input_tensor(Xs_tr[:, sample_idx])
             # Project input onto MPS (w/o the bond tensor)
-            proj = project_input(input_tensor_sample, left, right)
+            proj = project_input(input_tensor_sample, right, previous_projections[j], output_idx, mps[output_idx - 1])
+            previous_projections[j] = proj
             # Update the gradient
             grad = grad + gradient(bond_tensor, proj, Ys_tr[:, sample_idx])
 
@@ -361,10 +224,11 @@ def sweeping_mps_optimization(Xs_tr, Ys_tr, alpha, bond_dim):
             bond_tensor.add_axis_names(['l', 'r', 'in1', 'in2', 'out'])
 
         mps, output_idx = split_bond_and_update(mps, bond_tensor, bond_dim, output_idx)
+        # print(np.max(bond_tensor.tensor))
     print('Training Error ' + str(model_error(mps, Xs_tr, Ys_tr)))
 
 
 if __name__ == "__main__":
     (Xs_tr, Ys_tr, Xs_te, Ys_te) = load_MNIST_dataset()
-    sweeping_mps_optimization(Xs_tr, Ys_tr, 0.01, 15)
+    sweeping_mps_optimization(Xs_tr, Ys_tr, 0.01, 25)
 
